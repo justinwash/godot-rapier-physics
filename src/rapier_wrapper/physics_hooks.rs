@@ -1,13 +1,15 @@
 use rapier::prelude::*;
 
 use crate::rapier_wrapper::prelude::*;
-use crate::servers::rapier_physics_server_extra::PhysicsCollisionObjects;
+use crate::servers::rapier_physics_singleton::PhysicsCollisionObjects;
 #[derive(Default)]
 pub struct OneWayDirection {
     pub body1: bool,
     pub body2: bool,
     pub pixel_body1_margin: Real,
     pub pixel_body2_margin: Real,
+    pub previous_linear_velocity1: Vector<Real>,
+    pub previous_linear_velocity2: Vector<Real>,
 }
 pub type CollisionFilterCallback = fn(
     filter_info: &CollisionFilterInfo,
@@ -25,6 +27,8 @@ pub struct PhysicsHooksCollisionFilter<'a> {
     pub collision_filter_body_callback: &'a CollisionFilterCallback,
     pub collision_modify_contacts_callback: &'a CollisionModifyContactsCallback,
     pub physics_collision_objects: &'a PhysicsCollisionObjects,
+    pub last_step: Real,
+    pub ghost_collision_distance: Real,
 }
 impl<'a> PhysicsHooks for PhysicsHooksCollisionFilter<'a> {
     fn filter_contact_pair(&self, context: &PairFilterContext) -> Option<SolverFlags> {
@@ -74,26 +78,73 @@ impl<'a> PhysicsHooks for PhysicsHooksCollisionFilter<'a> {
         let one_way_direction =
             (self.collision_modify_contacts_callback)(&filter_info, self.physics_collision_objects);
         let mut contact_is_pass_through = false;
-        let mut dist: Real = 0.0;
-        if let Some(contact) = context.manifold.find_deepest_contact() {
-            dist = contact.dist;
+        let mut rigid_body_1_linvel = one_way_direction.previous_linear_velocity1;
+        let mut rigid_body_2_linvel = one_way_direction.previous_linear_velocity2;
+        if rigid_body_1_linvel.norm() == 0.0 {
+            rigid_body_1_linvel = *body1.linvel();
         }
+        if rigid_body_2_linvel.norm() == 0.0 {
+            rigid_body_2_linvel = *body2.linvel();
+        }
+        // ghost collisions
+        if body1.is_dynamic() && !body2.is_dynamic() {
+            let normal = *context.normal;
+            if rigid_body_1_linvel.norm() == 0.0 {
+                return;
+            }
+            let normal_dot_velocity = normal.dot(&rigid_body_1_linvel.normalize());
+            let velocity_magnitude = rigid_body_1_linvel.magnitude() * self.last_step;
+            let length_along_normal = velocity_magnitude * Real::max(normal_dot_velocity, 0.0);
+            if normal_dot_velocity >= -DEFAULT_EPSILON {
+                context.solver_contacts.retain(|contact| {
+                    let dist = -contact.dist;
+                    let diff = dist - length_along_normal;
+                    if diff < 0.5 && dist.abs() < self.ghost_collision_distance {
+                        return false;
+                    }
+                    true
+                });
+            }
+        } else if body2.is_dynamic() && !body1.is_dynamic() {
+            let normal = -*context.normal;
+            if rigid_body_2_linvel.norm() == 0.0 {
+                return;
+            }
+            let normal_dot_velocity = normal.dot(&rigid_body_2_linvel.normalize());
+            let velocity_magnitude = rigid_body_2_linvel.magnitude() * self.last_step;
+            let length_along_normal = velocity_magnitude * Real::max(normal_dot_velocity, 0.0);
+            if normal_dot_velocity >= -DEFAULT_EPSILON {
+                context.solver_contacts.retain(|contact| {
+                    let dist = -contact.dist;
+                    let diff = dist - length_along_normal;
+                    if diff < 0.5 && dist.abs() < self.ghost_collision_distance {
+                        return false;
+                    }
+                    true
+                });
+            }
+        }
+        let mut dist = 0.0;
+        if let Some(deepest) = context.manifold.find_deepest_contact() {
+            dist = deepest.dist;
+        }
+        // one way collision
         if one_way_direction.body1 {
-            let motion_len = body2.linvel().magnitude();
             let body_margin1 = one_way_direction.pixel_body1_margin;
-            let max_allowed = motion_len
-                * Real::max(body2.linvel().normalize().dot(&allowed_local_n1), 0.0)
-                + body_margin1;
-            contact_is_pass_through =
-                body2.linvel().dot(&allowed_local_n1) <= DEFAULT_EPSILON || dist < -max_allowed;
+            let motion_len = rigid_body_2_linvel.magnitude();
+            let velocity_dot1 = rigid_body_2_linvel.normalize().dot(&allowed_local_n1);
+            let length_along_normal = motion_len * Real::max(velocity_dot1, 0.0) * self.last_step;
+            contact_is_pass_through |= velocity_dot1 <= DEFAULT_EPSILON
+                && dist - length_along_normal > body_margin1
+                && length_along_normal > DEFAULT_EPSILON;
         } else if one_way_direction.body2 {
-            let motion_len = body1.linvel().magnitude();
+            let velocity_dot2 = rigid_body_1_linvel.normalize().dot(&allowed_local_n2);
+            let motion_len = rigid_body_1_linvel.magnitude();
             let body_margin2 = one_way_direction.pixel_body2_margin;
-            let max_allowed = motion_len
-                * Real::max(body1.linvel().normalize().dot(&allowed_local_n2), 0.0)
-                + body_margin2;
-            contact_is_pass_through =
-                body1.linvel().dot(&allowed_local_n2) <= DEFAULT_EPSILON || dist < -max_allowed;
+            let length_along_normal = motion_len * Real::max(velocity_dot2, 0.0) * self.last_step;
+            contact_is_pass_through |= velocity_dot2 <= DEFAULT_EPSILON
+                && dist - length_along_normal > body_margin2
+                && length_along_normal > DEFAULT_EPSILON;
         }
         if contact_is_pass_through {
             context.solver_contacts.clear();

@@ -1,7 +1,7 @@
 #[cfg(feature = "dim2")]
-use godot::engine::physics_server_2d::ShapeType;
+use godot::classes::physics_server_2d::ShapeType;
 #[cfg(feature = "dim3")]
-use godot::engine::physics_server_3d::ShapeType;
+use godot::classes::physics_server_3d::ShapeType;
 use godot::prelude::*;
 
 use crate::rapier_wrapper::prelude::*;
@@ -52,13 +52,16 @@ impl IRapierShape for RapierSeparationRayShape {
             godot_error!("Invalid shape data.");
             return;
         }
-        let dictionary: Dictionary = data.to();
+        let dictionary: Dictionary = data.try_to().unwrap_or_default();
         if !dictionary.contains_key("length") && !dictionary.contains_key("slide_on_slope") {
             godot_error!("Invalid shape data.");
             return;
         }
-        self.length = dictionary.get_or_nil("length").to();
-        self.slide_on_slope = dictionary.get_or_nil("slide_on_slope").to();
+        self.length = dictionary.get_or_nil("length").try_to().unwrap_or_default();
+        self.slide_on_slope = dictionary
+            .get_or_nil("slide_on_slope")
+            .try_to()
+            .unwrap_or_default();
     }
 
     fn get_data(&self) -> Variant {

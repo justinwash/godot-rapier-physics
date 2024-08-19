@@ -1,12 +1,12 @@
 #[cfg(feature = "dim2")]
-use godot::engine::physics_server_2d::*;
+use godot::classes::physics_server_2d::*;
 #[cfg(feature = "dim3")]
-use godot::engine::physics_server_3d::*;
+use godot::classes::physics_server_3d::*;
 use godot::prelude::*;
 use hashbrown::HashMap;
 
 use crate::rapier_wrapper::prelude::*;
-use crate::servers::rapier_physics_server_extra::PhysicsData;
+use crate::servers::rapier_physics_singleton::PhysicsData;
 use crate::types::*;
 #[cfg_attr(feature = "serde-serialize", typetag::serde(tag = "type"))]
 pub trait IRapierShape {
@@ -24,12 +24,23 @@ pub trait IRapierShape {
     derive(serde::Serialize, serde::Deserialize)
 )]
 pub struct RapierShapeBase {
+    #[cfg_attr(feature = "serde-serialize", serde(skip, default = "invalid_rid"))]
     rid: Rid,
     aabb: Rect,
     // TODO serialize this
     #[cfg_attr(feature = "serde-serialize", serde(skip))]
     owners: HashMap<Rid, i32>,
     handle: ShapeHandle,
+}
+impl Default for RapierShapeBase {
+    fn default() -> Self {
+        Self {
+            rid: Rid::Invalid,
+            aabb: Rect::default(),
+            owners: HashMap::default(),
+            handle: ShapeHandle::default(),
+        }
+    }
 }
 impl RapierShapeBase {
     pub(super) fn new(rid: Rid) -> Self {

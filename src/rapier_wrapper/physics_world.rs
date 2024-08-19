@@ -1,16 +1,31 @@
 use std::num::NonZeroUsize;
 
-use godot::log::godot_print;
+use godot::global::godot_print;
 use rapier::crossbeam;
 use rapier::data::Arena;
+use rapier::data::Index;
 use rapier::prelude::*;
 use salva::integrations::rapier::FluidsPipeline;
 
 use crate::rapier_wrapper::prelude::*;
-use crate::servers::rapier_physics_server_extra::PhysicsCollisionObjects;
+use crate::servers::rapier_physics_singleton::PhysicsCollisionObjects;
 use crate::spaces::rapier_space::RapierSpace;
+#[cfg_attr(
+    feature = "serde-serialize",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
+pub struct JointHandle {
+    pub index: Index,
+    pub kinematic: bool,
+    pub multibody: bool,
+}
 pub struct ActiveBodyInfo {
     pub body_user_data: UserData,
+}
+pub struct BeforeActiveBodyInfo {
+    pub body_user_data: UserData,
+    pub previous_velocity: Vector<Real>,
 }
 #[derive(Default)]
 pub struct ContactPointInfo {
@@ -27,6 +42,7 @@ pub struct ContactPointInfo {
     feature = "serde-serialize",
     derive(serde::Serialize, serde::Deserialize)
 )]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
 pub struct CollisionEventInfo {
     pub collider1: ColliderHandle,
     pub collider2: ColliderHandle,
@@ -110,10 +126,30 @@ impl PhysicsWorld {
         space: &mut RapierSpace,
         physics_collision_objects: &mut PhysicsCollisionObjects,
     ) {
+        for handle in self.physics_objects.island_manager.active_dynamic_bodies() {
+            if let Some(body) = self.physics_objects.rigid_body_set.get(*handle) {
+                let before_active_body_info = BeforeActiveBodyInfo {
+                    body_user_data: self.get_rigid_body_user_data(*handle),
+                    previous_velocity: *body.linvel(),
+                };
+                space.before_active_body_callback(
+                    &before_active_body_info,
+                    physics_collision_objects,
+                );
+            }
+        }
         let mut integration_parameters = IntegrationParameters {
             length_unit: settings.length_unit,
             dt: settings.dt,
+            contact_damping_ratio: settings.contact_damping_ratio,
+            contact_natural_frequency: settings.contact_natural_frequency,
             max_ccd_substeps: settings.max_ccd_substeps,
+            joint_damping_ratio: settings.joint_damping_ratio,
+            joint_natural_frequency: settings.joint_natural_frequency,
+            normalized_allowed_linear_error: settings.normalized_allowed_linear_error,
+            normalized_max_corrective_velocity: settings.normalized_max_corrective_velocity,
+            normalized_prediction_distance: settings.normalized_prediction_distance,
+            num_internal_stabilization_iterations: settings.num_internal_stabilization_iterations,
             ..Default::default()
         };
         if let Some(iterations) = NonZeroUsize::new(settings.num_solver_iterations) {
@@ -128,6 +164,8 @@ impl PhysicsWorld {
             collision_filter_body_callback: &collision_filter_body_callback,
             collision_modify_contacts_callback: &collision_modify_contacts_callback,
             physics_collision_objects,
+            last_step: RapierSpace::get_last_step(),
+            ghost_collision_distance: space.get_ghost_collision_distance(),
         };
         // Initialize the event collector.
         let (collision_send, collision_recv) = crossbeam::channel::unbounded();
@@ -157,7 +195,6 @@ impl PhysicsWorld {
             );
         }
         for handle in self.physics_objects.island_manager.active_dynamic_bodies() {
-            // Send the active body event.
             let active_body_info = ActiveBodyInfo {
                 body_user_data: self.get_rigid_body_user_data(*handle),
             };
@@ -168,7 +205,6 @@ impl PhysicsWorld {
             .island_manager
             .active_kinematic_bodies()
         {
-            // Send the active body event.
             let active_body_info = ActiveBodyInfo {
                 body_user_data: self.get_rigid_body_user_data(*handle),
             };
@@ -190,22 +226,22 @@ impl PhysicsWorld {
             };
             space.collision_event_callback(&event_info, physics_collision_objects);
         }
-        while let Ok((contact_force_event, contact_pair)) = contact_force_recv.try_recv() {
+        while let Ok(contact_pair) = contact_force_recv.try_recv() {
             if let Some(collider1) = self
                 .physics_objects
                 .collider_set
-                .get(contact_force_event.collider1)
+                .get(contact_pair.collider1)
                 && let Some(collider2) = self
                     .physics_objects
                     .collider_set
-                    .get(contact_force_event.collider2)
+                    .get(contact_pair.collider2)
             {
                 // Handle the contact force event.
                 let event_info = ContactForceEventInfo {
                     user_data1: UserData::new(collider1.user_data),
                     user_data2: UserData::new(collider2.user_data),
                 };
-                let mut send_contact_points =
+                let send_contact_points =
                     space.contact_force_event_callback(&event_info, physics_collision_objects);
                 if send_contact_points
                     && let Some(body1) = self.get_collider_rigid_body(collider1)
@@ -213,14 +249,6 @@ impl PhysicsWorld {
                 {
                     // Find the contact pair, if it exists, between two colliders
                     let mut contact_info = ContactPointInfo::default();
-                    let mut swap = false;
-                    if contact_force_event.collider1 != contact_pair.collider1 {
-                        assert!(contact_force_event.collider1 == contact_pair.collider2);
-                        assert!(contact_force_event.collider2 == contact_pair.collider1);
-                        swap = true;
-                    } else {
-                        assert!(contact_force_event.collider2 == contact_pair.collider2);
-                    }
                     // We may also read the contact manifolds to access the contact geometry.
                     for manifold in &contact_pair.manifolds {
                         let manifold_normal = manifold.data.normal;
@@ -238,31 +266,18 @@ impl PhysicsWorld {
                             let collider_pos_2 = collider2.position() * contact_point.local_p2;
                             let point_velocity_1 = body1.velocity_at_point(&collider_pos_1);
                             let point_velocity_2 = body2.velocity_at_point(&collider_pos_2);
-                            if swap {
-                                contact_info.pixel_local_pos_1 = collider_pos_2.coords;
-                                contact_info.pixel_local_pos_2 = collider_pos_1.coords;
-                                contact_info.pixel_velocity_pos_1 = point_velocity_2;
-                                contact_info.pixel_velocity_pos_2 = point_velocity_1;
-                            } else {
-                                contact_info.pixel_local_pos_1 = collider_pos_1.coords;
-                                contact_info.pixel_local_pos_2 = collider_pos_2.coords;
-                                contact_info.pixel_velocity_pos_1 = point_velocity_1;
-                                contact_info.pixel_velocity_pos_2 = point_velocity_2;
-                            }
+                            contact_info.pixel_local_pos_1 = collider_pos_1.coords;
+                            contact_info.pixel_local_pos_2 = collider_pos_2.coords;
+                            contact_info.pixel_velocity_pos_1 = point_velocity_1;
+                            contact_info.pixel_velocity_pos_2 = point_velocity_2;
                             contact_info.pixel_distance = contact_point.dist;
                             contact_info.pixel_impulse = contact_point.data.impulse;
                             contact_info.pixel_tangent_impulse = contact_point.data.tangent_impulse;
-                            send_contact_points = space.contact_point_callback(
+                            space.contact_point_callback(
                                 &contact_info,
                                 &event_info,
                                 physics_collision_objects,
                             );
-                            if !send_contact_points {
-                                break;
-                            }
-                        }
-                        if !send_contact_points {
-                            break;
                         }
                     }
                 }
@@ -336,23 +351,138 @@ impl PhysicsWorld {
         &mut self,
         body_handle_1: RigidBodyHandle,
         body_handle_2: RigidBodyHandle,
+        multibody: bool,
+        kinematic: bool,
         joint: impl Into<GenericJoint>,
-    ) -> ImpulseJointHandle {
+    ) -> JointHandle {
         let rigid_body_1_handle = body_handle_1;
         let rigid_body_2_handle = body_handle_2;
-        self.physics_objects.impulse_joint_set.insert(
-            rigid_body_1_handle,
-            rigid_body_2_handle,
-            joint,
-            true,
-        )
+        match (multibody, kinematic) {
+            (false, _) => {
+                let impulse_joint_handle = self.physics_objects.impulse_joint_set.insert(
+                    rigid_body_1_handle,
+                    rigid_body_2_handle,
+                    joint,
+                    true,
+                );
+                return JointHandle {
+                    index: impulse_joint_handle.0,
+                    kinematic,
+                    multibody,
+                };
+            }
+            (true, true) => {
+                let multibody_joint_handle = self
+                    .physics_objects
+                    .multibody_joint_set
+                    .insert_kinematic(rigid_body_1_handle, rigid_body_2_handle, joint, true);
+                if let Some(multibody_joint_handle) = multibody_joint_handle {
+                    return JointHandle {
+                        index: multibody_joint_handle.0,
+                        kinematic,
+                        multibody,
+                    };
+                }
+            }
+            (true, false) => {
+                let multibody_joint_handle = self.physics_objects.multibody_joint_set.insert(
+                    rigid_body_1_handle,
+                    rigid_body_2_handle,
+                    joint,
+                    true,
+                );
+                if let Some(multibody_joint_handle) = multibody_joint_handle {
+                    return JointHandle {
+                        index: multibody_joint_handle.0,
+                        kinematic,
+                        multibody,
+                    };
+                }
+            }
+        }
+        JointHandle::default()
     }
 
-    pub fn remove_joint(&mut self, handle: ImpulseJointHandle) {
-        let joint_handle = handle;
-        self.physics_objects
-            .impulse_joint_set
-            .remove(joint_handle, true);
+    pub fn get_mut_joint(&mut self, handle: JointHandle) -> Option<&mut GenericJoint> {
+        match handle.multibody {
+            false => {
+                let joint = self
+                    .physics_objects
+                    .impulse_joint_set
+                    .get_mut(ImpulseJointHandle(handle.index));
+                if let Some(joint) = joint {
+                    return Some(&mut joint.data);
+                }
+            }
+            true => {
+                let joint = self
+                    .physics_objects
+                    .multibody_joint_set
+                    .get_mut(MultibodyJointHandle(handle.index));
+                if let Some((multibody, link_id)) = joint
+                    && let Some(link) = multibody.link_mut(link_id)
+                {
+                    return Some(&mut link.joint.data);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn get_joint(&self, handle: JointHandle) -> Option<&GenericJoint> {
+        match handle.multibody {
+            false => {
+                let joint = self
+                    .physics_objects
+                    .impulse_joint_set
+                    .get(ImpulseJointHandle(handle.index));
+                if let Some(joint) = joint {
+                    return Some(&joint.data);
+                }
+            }
+            true => {
+                let joint = self
+                    .physics_objects
+                    .multibody_joint_set
+                    .get(MultibodyJointHandle(handle.index));
+                if let Some((multibody, link_id)) = joint
+                    && let Some(link) = multibody.link(link_id)
+                {
+                    return Some(&link.joint.data);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn get_impulse_joint(&self, handle: JointHandle) -> Option<&ImpulseJoint> {
+        match handle.multibody {
+            false => {
+                let joint = self
+                    .physics_objects
+                    .impulse_joint_set
+                    .get(ImpulseJointHandle(handle.index));
+                joint
+            }
+            true => None,
+        }
+    }
+
+    pub fn remove_joint(&mut self, handle: JointHandle) {
+        match handle.multibody {
+            false => {
+                let joint_handle = handle;
+                self.physics_objects
+                    .impulse_joint_set
+                    .remove(ImpulseJointHandle(joint_handle.index), true);
+            }
+            true => {
+                let joint_handle = handle;
+                self.physics_objects
+                    .multibody_joint_set
+                    .remove(MultibodyJointHandle(joint_handle.index), true);
+            }
+        }
     }
 }
 #[derive(Default)]
@@ -400,6 +530,13 @@ impl PhysicsEngine {
     pub fn world_reset_if_empty(&mut self, world_handle: WorldHandle, settings: &WorldSettings) {
         if let Some(physics_world) = self.get_mut_world(world_handle) {
             if physics_world.physics_objects.impulse_joint_set.is_empty()
+                && physics_world
+                    .physics_objects
+                    .multibody_joint_set
+                    .multibodies()
+                    .peekable()
+                    .peek()
+                    .is_some()
                 && physics_world.physics_objects.rigid_body_set.is_empty()
                 && physics_world.physics_objects.collider_set.is_empty()
             {

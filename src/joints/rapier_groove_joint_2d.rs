@@ -3,7 +3,7 @@ use godot::prelude::*;
 
 use super::rapier_damped_spring_joint_2d::RapierDampedSpringJoint2D;
 use super::rapier_joint::RapierJointBase;
-use super::rapier_pin_joint_2d::RapierPinJoint2D;
+use super::rapier_revolute_joint::RapierRevoluteJoint;
 use crate::bodies::rapier_collision_object::IRapierCollisionObject;
 use crate::joints::rapier_joint::IRapierJoint;
 use crate::rapier_wrapper::prelude::*;
@@ -20,8 +20,8 @@ impl RapierGrooveJoint2D {
         p_a_groove1: Vector,
         p_a_groove2: Vector,
         p_b_anchor: Vector,
-        body_a: &Box<dyn IRapierCollisionObject>,
-        body_b: &Box<dyn IRapierCollisionObject>,
+        body_a: &dyn IRapierCollisionObject,
+        body_b: &dyn IRapierCollisionObject,
         physics_engine: &mut PhysicsEngine,
     ) -> Self {
         let invalid_joint = Self {
@@ -59,6 +59,8 @@ impl RapierGrooveJoint2D {
             rapier_anchor_a,
             rapier_anchor_b,
             rapier_limits,
+            false,
+            false,
             true,
         );
         Self {
@@ -84,7 +86,7 @@ impl IRapierJoint for RapierGrooveJoint2D {
         None
     }
 
-    fn get_pin(&self) -> Option<&RapierPinJoint2D> {
+    fn get_revolute(&self) -> Option<&RapierRevoluteJoint> {
         None
     }
 
@@ -92,7 +94,7 @@ impl IRapierJoint for RapierGrooveJoint2D {
         None
     }
 
-    fn get_mut_pin(&mut self) -> Option<&mut RapierPinJoint2D> {
+    fn get_mut_revolute(&mut self) -> Option<&mut RapierRevoluteJoint> {
         None
     }
 }

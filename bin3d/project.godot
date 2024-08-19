@@ -15,6 +15,10 @@ run/main_scene="res://test.tscn"
 config/features=PackedStringArray("4.3", "Forward Plus")
 config/icon="res://addons/godot-rapier3d/logo_square_3d.png"
 
+[debug]
+
+shapes/navigation/geometry_face_color=Color(0.501961, 1, 1, 0.658824)
+
 [display]
 
 window/size/viewport_width=1920
@@ -22,8 +26,10 @@ window/size/viewport_height=1080
 
 [editor_plugins]
 
-enabled=PackedStringArray()
+enabled=PackedStringArray("res://addons/godot-rapier3d/plugin.cfg")
 
 [physics]
 
 2d/physics_engine="Rapier2D"
+3d/physics_engine="Rapier3D"
+rapier/fluid/fluid_particle_radius_3d=0.5

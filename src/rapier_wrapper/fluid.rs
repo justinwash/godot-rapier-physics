@@ -5,7 +5,6 @@ use salva::solver::*;
 
 use super::shape::point_array_to_vec;
 use crate::rapier_wrapper::prelude::*;
-use crate::types::PackedVectorArray;
 impl PhysicsEngine {
     pub fn fluid_create(&mut self, world_handle: WorldHandle, density: Real) -> HandleDouble {
         if let Some(physics_world) = self.get_mut_world(world_handle) {
@@ -40,7 +39,7 @@ impl PhysicsEngine {
         world_handle: WorldHandle,
         fluid_handle: HandleDouble,
         points: &Vec<Vector<Real>>,
-        velocity_points: &Vec<Vector<Real>>,
+        velocity_points: &[Vector<Real>],
     ) {
         if let Some(physics_world) = self.get_mut_world(world_handle)
             && let Some(fluid) = physics_world
@@ -61,7 +60,7 @@ impl PhysicsEngine {
                     accelerations[i] = fluid.accelerations[i];
                 }
             }
-            fluid.velocities = velocity_points.clone();
+            fluid.velocities = velocity_points.to_owned();
             fluid.accelerations = accelerations;
             fluid.volumes = std::iter::repeat(fluid.default_particle_volume())
                 .take(points_len)
@@ -112,8 +111,7 @@ impl PhysicsEngine {
         &mut self,
         world_handle: WorldHandle,
         fluid_handle: HandleDouble,
-        indexes: &usize,
-        indexes_count: usize,
+        indices: Vec<i32>,
     ) {
         if let Some(physics_world) = self.get_mut_world(world_handle)
             && let Some(fluid) = physics_world
@@ -122,42 +120,39 @@ impl PhysicsEngine {
                 .fluids_mut()
                 .get_mut(handle_to_fluid_handle(fluid_handle))
         {
-            unsafe {
-                let indexes_raw = std::slice::from_raw_parts(indexes, indexes_count);
-                // create mask from array of indexes
-                let mut mask = vec![false; fluid.positions.len()];
-                for i in 0..indexes_count {
-                    if fluid.positions.len() <= indexes_raw[i] {
-                        continue;
-                    }
-                    mask[indexes_raw[i]] = true;
+            // create mask from array of indexes
+            let mut mask = vec![false; fluid.positions.len()];
+            for i in 0..indices.len() {
+                if fluid.positions.len() <= indices[i] as usize {
+                    continue;
                 }
-                let mut i = 0;
-                // remove all points that are not in the mask
-                fluid.positions.retain(|_| {
-                    let delete = mask[i];
-                    i += 1;
-                    !delete
-                });
-                let mut i = 0;
-                fluid.velocities.retain(|_| {
-                    let delete = mask[i];
-                    i += 1;
-                    !delete
-                });
-                let mut i = 0;
-                fluid.accelerations.retain(|_| {
-                    let delete = mask[i];
-                    i += 1;
-                    !delete
-                });
-                let mut i = 0;
-                fluid.volumes.retain(|_| {
-                    let delete = mask[i];
-                    i += 1;
-                    !delete
-                });
+                mask[indices[i] as usize] = true;
             }
+            let mut i = 0;
+            // remove all points that are not in the mask
+            fluid.positions.retain(|_| {
+                let delete = mask[i];
+                i += 1;
+                !delete
+            });
+            let mut i = 0;
+            fluid.velocities.retain(|_| {
+                let delete = mask[i];
+                i += 1;
+                !delete
+            });
+            let mut i = 0;
+            fluid.accelerations.retain(|_| {
+                let delete = mask[i];
+                i += 1;
+                !delete
+            });
+            let mut i = 0;
+            fluid.volumes.retain(|_| {
+                let delete = mask[i];
+                i += 1;
+                !delete
+            });
         }
     }
 
@@ -166,7 +161,7 @@ impl PhysicsEngine {
         world_handle: WorldHandle,
         fluid_handle: HandleDouble,
         points: &Vec<Vector<Real>>,
-        velocity_points: &Vec<Vector<Real>>,
+        velocity_points: &[Vector<Real>],
     ) {
         if let Some(physics_world) = self.get_mut_world(world_handle)
             && let Some(fluid) = physics_world
@@ -184,9 +179,7 @@ impl PhysicsEngine {
                 .take(new_point_count)
                 .collect();
             // copy back the accelerations that were before, if they exist
-            for i in 0..fluid.accelerations.len() {
-                accelerations[i] = fluid.accelerations[i];
-            }
+            accelerations[..fluid.accelerations.len()].copy_from_slice(&fluid.accelerations[..]);
             fluid.accelerations = accelerations;
             fluid.volumes = std::iter::repeat(fluid.default_particle_volume())
                 .take(new_point_count)
@@ -198,8 +191,8 @@ impl PhysicsEngine {
         &self,
         world_handle: WorldHandle,
         fluid_handle: HandleDouble,
-    ) -> PackedVectorArray {
-        let mut array = PackedVectorArray::new();
+    ) -> Vec<crate::types::Vector> {
+        let mut array = Vec::new();
         if let Some(physics_world) = self.get_world(world_handle)
             && let Some(fluid) = physics_world
                 .fluids_pipeline
@@ -218,8 +211,8 @@ impl PhysicsEngine {
         &self,
         world_handle: WorldHandle,
         fluid_handle: HandleDouble,
-    ) -> PackedVectorArray {
-        let mut array = PackedVectorArray::new();
+    ) -> Vec<crate::types::Vector> {
+        let mut array = Vec::new();
         if let Some(physics_world) = self.get_world(world_handle)
             && let Some(fluid) = physics_world
                 .fluids_pipeline
@@ -238,8 +231,8 @@ impl PhysicsEngine {
         &self,
         world_handle: WorldHandle,
         fluid_handle: HandleDouble,
-    ) -> PackedVectorArray {
-        let mut array = PackedVectorArray::new();
+    ) -> Vec<crate::types::Vector> {
+        let mut array = Vec::new();
         if let Some(physics_world) = self.get_world(world_handle)
             && let Some(fluid) = physics_world
                 .fluids_pipeline

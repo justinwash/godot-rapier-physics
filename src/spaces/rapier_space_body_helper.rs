@@ -6,8 +6,8 @@ use godot::prelude::*;
 use rapier::geometry::ColliderHandle;
 use rapier::math::Real;
 use rapier::math::DEFAULT_EPSILON;
-use servers::rapier_physics_server_extra::PhysicsCollisionObjects;
-use servers::rapier_physics_server_extra::PhysicsShapes;
+use servers::rapier_physics_singleton::PhysicsCollisionObjects;
+use servers::rapier_physics_singleton::PhysicsShapes;
 
 use super::rapier_space::RapierSpace;
 use super::RapierDirectSpaceState;
@@ -250,6 +250,9 @@ impl RapierSpace {
                             physics_collision_objects.get(&shape_col_object)
                         {
                             if let Some(collision_body) = shape_col_object.get_body() {
+                                if collision_body.has_exception(p_body.get_base().get_rid()) {
+                                    continue;
+                                }
                                 if let Some(col_shape) = physics_shapes
                                     .get(&collision_body.get_base().get_shape(shape_index))
                                 {
@@ -272,7 +275,7 @@ impl RapierSpace {
                                     }
                                     if physics_engine.should_skip_collision_one_dir(
                                         &contact,
-                                        body_shape,
+                                        body_shape.deref(),
                                         collision_body,
                                         shape_index,
                                         &col_shape_transform,
@@ -394,6 +397,9 @@ impl RapierSpace {
                     if let Some(shape_col_object) = physics_collision_objects.get(&shape_col_object)
                     {
                         if let Some(collision_body) = shape_col_object.get_body() {
+                            if collision_body.has_exception(p_body.get_base().get_rid()) {
+                                continue;
+                            }
                             if let Some(col_shape) = physics_shapes
                                 .get(&collision_body.get_base().get_shape(shape_index))
                             {
@@ -484,7 +490,7 @@ impl RapierSpace {
                                 }
                                 if physics_engine.should_skip_collision_one_dir(
                                     &contact,
-                                    body_shape,
+                                    body_shape.deref(),
                                     collision_body,
                                     shape_index,
                                     &col_shape_transform,
@@ -591,6 +597,9 @@ impl RapierSpace {
                     if let Some(shape_col_object) = physics_collision_objects.get(&shape_col_object)
                     {
                         if let Some(collision_body) = shape_col_object.get_body() {
+                            if collision_body.has_exception(p_body.get_base().get_rid()) {
+                                continue;
+                            }
                             let col_shape_rid = collision_body.get_base().get_shape(shape_index);
                             if let Some(col_shape) = physics_shapes.get(&col_shape_rid) {
                                 let col_shape_transform = collision_body.get_base().get_transform()
@@ -609,7 +618,7 @@ impl RapierSpace {
                                 }
                                 if physics_engine.should_skip_collision_one_dir(
                                     &contact,
-                                    body_shape_obj,
+                                    body_shape_obj.deref(),
                                     collision_body,
                                     shape_index,
                                     &col_shape_transform,
@@ -680,6 +689,7 @@ fn set_collision_info(
     p_result.collider_velocity = collider_velocity;
 }
 #[cfg(feature = "dim3")]
+#[allow(clippy::too_many_arguments)]
 fn set_collision_info(
     p_result: &mut PhysicsServerExtensionMotionResult,
     collider: Rid,
@@ -710,7 +720,7 @@ impl PhysicsEngine {
     fn should_skip_collision_one_dir(
         &self,
         contact: &ContactResult,
-        body_shape: &Box<dyn IRapierShape>,
+        body_shape: &dyn IRapierShape,
         collision_body: &dyn IRapierCollisionObject,
         shape_index: usize,
         col_shape_transform: &Transform,

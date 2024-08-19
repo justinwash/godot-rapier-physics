@@ -1,5 +1,5 @@
 use godot::builtin::math::FloatExt;
-use godot::log::godot_error;
+use godot::global::godot_error;
 use rapier::prelude::*;
 use salva::integrations::rapier::ColliderSampling;
 use salva::object::Boundary;
@@ -93,7 +93,7 @@ pub fn scale_shape(shape: &SharedShape, shape_info: ShapeInfo) -> SharedShape {
     match shape.shape_type() {
         ShapeType::Ball => {
             if let Some(new_shape) = shape.as_ball() {
-                if let Some(new_shape) = new_shape.scaled(&scale, SUBDIVISIONS) {
+                if let Some(new_shape) = new_shape.scaled(&scale.abs(), SUBDIVISIONS) {
                     match new_shape {
                         Left(shape) => return SharedShape::new(shape),
                         Right(shape) => return SharedShape::new(shape),
@@ -103,18 +103,24 @@ pub fn scale_shape(shape: &SharedShape, shape_info: ShapeInfo) -> SharedShape {
         }
         ShapeType::Cuboid => {
             if let Some(new_shape) = shape.as_cuboid() {
-                return SharedShape::new(new_shape.scaled(&scale));
+                return SharedShape::new(new_shape.scaled(&scale.abs()));
             }
         }
         ShapeType::HalfSpace => {
             if let Some(new_shape) = shape.as_halfspace() {
-                if let Some(new_shape) = new_shape.scaled(&scale) {
+                if let Some(new_shape) = new_shape.scaled(&scale.abs()) {
                     return SharedShape::new(new_shape);
                 }
             }
         }
         ShapeType::Polyline => {
             if let Some(new_shape) = shape.as_polyline() {
+                return SharedShape::new(new_shape.clone().scaled(&scale));
+            }
+        }
+        #[cfg(feature = "dim3")]
+        ShapeType::TriMesh => {
+            if let Some(new_shape) = shape.as_trimesh() {
                 return SharedShape::new(new_shape.clone().scaled(&scale));
             }
         }
@@ -132,6 +138,14 @@ pub fn scale_shape(shape: &SharedShape, shape_info: ShapeInfo) -> SharedShape {
         #[cfg(feature = "dim2")]
         ShapeType::ConvexPolygon => {
             if let Some(new_shape) = shape.as_convex_polygon() {
+                if let Some(new_shape) = new_shape.clone().scaled(&scale) {
+                    return SharedShape::new(new_shape);
+                }
+            }
+        }
+        #[cfg(feature = "dim3")]
+        ShapeType::ConvexPolyhedron => {
+            if let Some(new_shape) = shape.as_convex_polyhedron() {
                 if let Some(new_shape) = new_shape.clone().scaled(&scale) {
                     return SharedShape::new(new_shape);
                 }
@@ -181,9 +195,9 @@ pub struct Material {
 impl Material {
     pub fn new(collision_layer: u32, collision_mask: u32) -> Material {
         Material {
-            friction: -1.0,
-            restitution: -1.0,
-            contact_skin: -1.0,
+            friction: 0.0,
+            restitution: 0.0,
+            contact_skin: 0.0,
             collision_layer,
             collision_mask,
         }
@@ -202,6 +216,52 @@ fn shape_is_halfspace(shape: &SharedShape) -> bool {
     shape.shape_type() == ShapeType::HalfSpace
 }
 impl PhysicsEngine {
+    pub fn collider_set_modify_contacts_enabled(
+        &mut self,
+        world_handle: WorldHandle,
+        collider_handle: ColliderHandle,
+        enable: bool,
+    ) {
+        if let Some(physics_world) = self.get_mut_world(world_handle) {
+            if let Some(collider) = physics_world
+                .physics_objects
+                .collider_set
+                .get_mut(collider_handle)
+            {
+                let mut active_events = collider.active_hooks();
+                if enable {
+                    active_events |= ActiveHooks::MODIFY_SOLVER_CONTACTS;
+                } else {
+                    active_events &= !ActiveHooks::MODIFY_SOLVER_CONTACTS;
+                }
+                collider.set_active_hooks(active_events);
+            }
+        }
+    }
+
+    pub fn collider_set_filter_contacts_enabled(
+        &mut self,
+        world_handle: WorldHandle,
+        collider_handle: ColliderHandle,
+        enable: bool,
+    ) {
+        if let Some(physics_world) = self.get_mut_world(world_handle) {
+            if let Some(collider) = physics_world
+                .physics_objects
+                .collider_set
+                .get_mut(collider_handle)
+            {
+                let mut active_events = collider.active_hooks();
+                if enable {
+                    active_events |= ActiveHooks::FILTER_CONTACT_PAIRS;
+                } else {
+                    active_events &= !ActiveHooks::FILTER_CONTACT_PAIRS;
+                }
+                collider.set_active_hooks(active_events);
+            }
+        }
+    }
+
     pub fn collider_create_solid(
         &mut self,
         world_handle: WorldHandle,
@@ -216,15 +276,10 @@ impl PhysicsEngine {
                 .contact_force_event_threshold(-Real::MAX)
                 .density(1.0)
                 .build();
-            // TODO update when https://github.com/dimforge/rapier/issues/622 is fixed
-            if mat.friction >= 0.0 {
-                collider.set_friction(mat.friction);
-            }
-            if mat.restitution >= 0.0 {
-                collider.set_restitution(mat.restitution);
-            }
-            collider.set_friction_combine_rule(CoefficientCombineRule::Multiply);
-            collider.set_restitution_combine_rule(CoefficientCombineRule::Max);
+            collider.set_friction(mat.friction);
+            collider.set_restitution(mat.restitution);
+            collider.set_friction_combine_rule(CoefficientCombineRule::Min);
+            collider.set_restitution_combine_rule(CoefficientCombineRule::Sum);
             collider.set_collision_groups(InteractionGroups {
                 memberships: Group::from(mat.collision_layer),
                 filter: Group::from(mat.collision_mask),
@@ -236,9 +291,6 @@ impl PhysicsEngine {
             collider.set_contact_skin(mat.contact_skin);
             collider.set_contact_force_event_threshold(-Real::MAX);
             collider.user_data = user_data.get_data();
-            collider.set_active_hooks(
-                ActiveHooks::FILTER_CONTACT_PAIRS | ActiveHooks::MODIFY_SOLVER_CONTACTS,
-            );
             if let Some(physics_world) = self.get_mut_world(world_handle) {
                 let collider_handle = physics_world.insert_collider(collider, body_handle);
                 // register fluid coupling. Dynamic coupling doens't work for halfspace
@@ -280,6 +332,7 @@ impl PhysicsEngine {
         &mut self,
         world_handle: WorldHandle,
         shape_handle: ShapeHandle,
+        mat: &Material,
         body_handle: RigidBodyHandle,
         user_data: &UserData,
     ) -> ColliderHandle {
@@ -289,8 +342,8 @@ impl PhysicsEngine {
             collider.set_active_events(ActiveEvents::COLLISION_EVENTS);
             // less data to serialize
             collider.set_collision_groups(InteractionGroups {
-                memberships: Group::GROUP_1,
-                filter: Group::GROUP_1,
+                memberships: Group::from(mat.collision_layer),
+                filter: Group::from(mat.collision_mask),
             });
             collider.set_solver_groups(InteractionGroups {
                 memberships: Group::GROUP_1,

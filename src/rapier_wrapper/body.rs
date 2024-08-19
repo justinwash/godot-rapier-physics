@@ -10,24 +10,50 @@ pub enum BodyType {
 }
 fn set_rigid_body_properties_internal(
     rigid_body: &mut RigidBody,
-    pos: Vector<Real>,
-    rot: AngVector<Real>,
+    pos: Translation<Real>,
+    rot: Rotation<Real>,
+    teleport: bool,
     wake_up: bool,
 ) {
-    if !rigid_body.is_kinematic() {
-        rigid_body.set_position(Isometry::new(pos, rot), wake_up);
+    if rigid_body.is_dynamic() || rigid_body.is_fixed() || teleport {
+        rigid_body.set_position(Isometry::from_parts(pos, rot), wake_up);
     } else {
-        rigid_body.set_next_kinematic_position(Isometry::new(pos, rot));
+        rigid_body.set_next_kinematic_position(Isometry::from_parts(pos, rot));
     }
 }
 impl PhysicsEngine {
+    fn body_wake_up_connected_rigidbodies(
+        &mut self,
+        world_handle: WorldHandle,
+        body_handle: RigidBodyHandle,
+    ) {
+        if let Some(physics_world) = self.get_mut_world(world_handle) {
+            for (rb1, rb2, ..) in physics_world
+                .physics_objects
+                .impulse_joint_set
+                .attached_joints(body_handle)
+            {
+                if let Some(rb1) = physics_world.physics_objects.rigid_body_set.get_mut(rb1) {
+                    rb1.wake_up(true);
+                }
+                if let Some(rb2) = physics_world.physics_objects.rigid_body_set.get_mut(rb2) {
+                    rb2.wake_up(true);
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn body_create(
         &mut self,
         world_handle: WorldHandle,
         pos: Vector<Real>,
-        rot: AngVector<Real>,
+        rot: Rotation<Real>,
         user_data: &UserData,
         body_type: BodyType,
+        activation_angular_threshold: Real,
+        activation_linear_threshold: Real,
+        activation_time_until_sleep: Real,
     ) -> RigidBodyHandle {
         let Some(physics_world) = self.get_mut_world(world_handle) else {
             return RigidBodyHandle::invalid();
@@ -45,11 +71,16 @@ impl PhysicsEngine {
             }
         }
         let activation = rigid_body.activation_mut();
-        let default_activation = RigidBodyActivation::default();
-        activation.angular_threshold = default_activation.angular_threshold;
-        activation.normalized_linear_threshold = default_activation.normalized_linear_threshold;
-        //activation.time_until_sleep = 0.5;
-        set_rigid_body_properties_internal(&mut rigid_body, pos, rot, true);
+        activation.angular_threshold = activation_angular_threshold;
+        activation.normalized_linear_threshold = activation_linear_threshold;
+        activation.time_until_sleep = activation_time_until_sleep;
+        set_rigid_body_properties_internal(
+            &mut rigid_body,
+            Translation::from(pos),
+            rot,
+            true,
+            true,
+        );
         rigid_body.user_data = user_data.get_data();
         physics_world
             .physics_objects
@@ -82,6 +113,7 @@ impl PhysicsEngine {
                 }
             }
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_destroy(&mut self, world_handle: WorldHandle, body_handle: RigidBodyHandle) {
@@ -108,40 +140,20 @@ impl PhysicsEngine {
         Vector::default()
     }
 
-    #[cfg(feature = "dim3")]
     pub fn body_get_angle(
         &self,
         world_handle: WorldHandle,
         body_handle: RigidBodyHandle,
-    ) -> AngVector<Real> {
+    ) -> Rotation<Real> {
         if let Some(physics_world) = self.get_world(world_handle)
             && let Some(body) = physics_world
                 .physics_objects
                 .rigid_body_set
                 .get(body_handle)
         {
-            let rotation = body.rotation().euler_angles();
-            return AngVector::new(rotation.0, rotation.1, rotation.2);
+            return *body.rotation();
         }
-        ANG_ZERO
-    }
-
-    #[cfg(feature = "dim2")]
-    pub fn body_get_angle(
-        &self,
-        world_handle: WorldHandle,
-        body_handle: RigidBodyHandle,
-    ) -> AngVector<Real> {
-        if let Some(physics_world) = self.get_world(world_handle)
-            && let Some(body) = physics_world
-                .physics_objects
-                .rigid_body_set
-                .get(body_handle)
-        {
-            let rotation = body.rotation().angle();
-            return rotation;
-        }
-        ANG_ZERO
+        Rotation::default()
     }
 
     pub fn body_set_transform(
@@ -149,7 +161,8 @@ impl PhysicsEngine {
         world_handle: WorldHandle,
         body_handle: RigidBodyHandle,
         pixel_pos: Vector<Real>,
-        rot: AngVector<Real>,
+        rot: Rotation<Real>,
+        teleport: bool,
         wake_up: bool,
     ) {
         if let Some(physics_world) = self.get_mut_world(world_handle)
@@ -158,8 +171,15 @@ impl PhysicsEngine {
                 .rigid_body_set
                 .get_mut(body_handle)
         {
-            set_rigid_body_properties_internal(body, pixel_pos, rot, wake_up);
+            set_rigid_body_properties_internal(
+                body,
+                Translation::from(pixel_pos),
+                rot,
+                teleport,
+                wake_up,
+            );
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_get_linear_velocity(
@@ -193,6 +213,7 @@ impl PhysicsEngine {
         {
             body.set_linvel(vel, true);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_set_axis_lock(
@@ -209,6 +230,7 @@ impl PhysicsEngine {
         {
             body.set_locked_axes(axis_lock, true);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_update_material(
@@ -229,23 +251,18 @@ impl PhysicsEngine {
                     .collider_set
                     .get_mut(*collider)
                 {
-                    // TODO update when https://github.com/dimforge/rapier/issues/622 is fixed
-                    if mat.friction >= 0.0 {
-                        col.set_friction(mat.friction);
-                    }
-                    if mat.restitution >= 0.0 {
-                        col.set_restitution(mat.restitution);
-                    }
-                    if mat.contact_skin >= 0.0 {
-                        col.set_contact_skin(mat.contact_skin);
-                    }
+                    col.set_friction(mat.friction);
+                    col.set_restitution(mat.restitution);
+                    col.set_contact_skin(mat.contact_skin);
                     col.set_collision_groups(InteractionGroups {
                         memberships: Group::from(mat.collision_layer),
                         filter: Group::from(mat.collision_mask),
                     });
                 }
             }
+            body.wake_up(false);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     #[cfg(feature = "dim2")]
@@ -296,6 +313,7 @@ impl PhysicsEngine {
         {
             body.set_angvel(vel, true);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_set_linear_damping(
@@ -312,6 +330,7 @@ impl PhysicsEngine {
         {
             body.set_linear_damping(linear_damping);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_set_angular_damping(
@@ -328,6 +347,7 @@ impl PhysicsEngine {
         {
             body.set_angular_damping(angular_damping);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_set_gravity_scale(
@@ -345,6 +365,7 @@ impl PhysicsEngine {
         {
             body.set_gravity_scale(gravity_scale, wake_up);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_set_can_sleep(
@@ -352,6 +373,9 @@ impl PhysicsEngine {
         world_handle: WorldHandle,
         body_handle: RigidBodyHandle,
         can_sleep: bool,
+        activation_angular_threshold: Real,
+        activation_linear_threshold: Real,
+        activation_time_until_sleep: Real,
     ) {
         if let Some(physics_world) = self.get_mut_world(world_handle)
             && let Some(body) = physics_world
@@ -365,16 +389,15 @@ impl PhysicsEngine {
                 activation.normalized_linear_threshold = -1.0;
             } else {
                 let activation = body.activation_mut();
-                let default_activation = RigidBodyActivation::default();
-                activation.angular_threshold = default_activation.angular_threshold;
-                activation.normalized_linear_threshold =
-                    default_activation.normalized_linear_threshold;
-                //activation.time_until_sleep = 0.5;
+                activation.angular_threshold = activation_angular_threshold;
+                activation.normalized_linear_threshold = activation_linear_threshold;
+                activation.time_until_sleep = activation_time_until_sleep;
             }
             if !can_sleep && body.is_sleeping() {
                 body.wake_up(true);
             }
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_set_ccd_enabled(
@@ -391,6 +414,7 @@ impl PhysicsEngine {
         {
             body.enable_ccd(enable);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -435,6 +459,7 @@ impl PhysicsEngine {
                 );
             }
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_add_force(
@@ -451,6 +476,7 @@ impl PhysicsEngine {
         {
             body.add_force(force, true);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_add_force_at_point(
@@ -469,6 +495,7 @@ impl PhysicsEngine {
             let local_point = Point { coords: point } + body.center_of_mass().coords;
             body.add_force_at_point(force, local_point, true);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_add_torque(
@@ -485,6 +512,7 @@ impl PhysicsEngine {
         {
             body.add_torque(torque, true);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_apply_impulse(
@@ -501,6 +529,7 @@ impl PhysicsEngine {
         {
             body.apply_impulse(impulse, true);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_apply_impulse_at_point(
@@ -520,6 +549,7 @@ impl PhysicsEngine {
             local_point += body.center_of_mass().coords;
             body.apply_impulse_at_point(impulse, local_point, true);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_get_constant_force(
@@ -568,6 +598,7 @@ impl PhysicsEngine {
         {
             body.apply_torque_impulse(torque_impulse, true);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_reset_torques(&mut self, world_handle: WorldHandle, body_handle: RigidBodyHandle) {
@@ -579,6 +610,7 @@ impl PhysicsEngine {
         {
             body.reset_torques(false);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_reset_forces(&mut self, world_handle: WorldHandle, body_handle: RigidBodyHandle) {
@@ -590,6 +622,7 @@ impl PhysicsEngine {
         {
             body.reset_forces(false);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_wake_up(
@@ -607,6 +640,7 @@ impl PhysicsEngine {
         {
             body.wake_up(strong);
         }
+        self.body_wake_up_connected_rigidbodies(world_handle, body_handle);
     }
 
     pub fn body_force_sleep(&mut self, world_handle: WorldHandle, body_handle: RigidBodyHandle) {
@@ -647,5 +681,21 @@ impl PhysicsEngine {
             return body.mass_properties().clone();
         }
         RigidBodyMassProps::default()
+    }
+
+    pub fn body_get_colliders(
+        &mut self,
+        world_handle: WorldHandle,
+        rigidbody_handle: RigidBodyHandle,
+    ) -> &[ColliderHandle] {
+        if let Some(physics_world) = self.get_mut_world(world_handle)
+            && let Some(body) = physics_world
+                .physics_objects
+                .rigid_body_set
+                .get_mut(rigidbody_handle)
+        {
+            return body.colliders();
+        }
+        &[]
     }
 }

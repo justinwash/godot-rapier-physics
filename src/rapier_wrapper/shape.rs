@@ -32,11 +32,17 @@ pub fn shape_info_from_body_shape(shape_handle: ShapeHandle, transform: Transfor
 #[cfg(feature = "dim3")]
 pub fn shape_info_from_body_shape(shape_handle: ShapeHandle, transform: Transform) -> ShapeInfo {
     use nalgebra::Isometry3;
-    let euler_angles = transform.basis.to_euler(godot::builtin::EulerOrder::XYZ);
-    let isometry = Isometry3::new(
-        vector_to_rapier(transform.origin),
-        vector_to_rapier(euler_angles),
-    );
+    use nalgebra::Quaternion;
+    use nalgebra::Translation3;
+    let quaternion = transform.basis.to_quat();
+    let rotation = Rotation::from_quaternion(Quaternion::new(
+        quaternion.w,
+        quaternion.x,
+        quaternion.y,
+        quaternion.z,
+    ));
+    let translation = Translation3::from(vector_to_rapier(transform.origin));
+    let isometry = Isometry3::from_parts(translation, rotation);
     ShapeInfo {
         handle: shape_handle,
         transform: isometry,
@@ -109,11 +115,15 @@ impl PhysicsEngine {
         let width = width as usize;
         let depth = depth as usize;
         let heights = DMatrix::from_fn(width, depth, |i, j| heights[j * (width) + i]);
-        let shape =
-            SharedShape::heightfield(heights, Vector3::new(depth as Real, 1.0, width as Real));
+        let shape = SharedShape::heightfield_with_flags(
+            heights,
+            Vector3::new(depth as Real, 1.0, width as Real),
+            HeightFieldFlags::FIX_INTERNAL_EDGES,
+        );
         self.insert_shape(shape)
     }
 
+    #[cfg(feature = "dim2")]
     pub fn shape_create_concave_polyline(
         &mut self,
         points: &Vec<Vector<Real>>,
@@ -121,6 +131,21 @@ impl PhysicsEngine {
     ) -> ShapeHandle {
         let points_vec = point_array_to_vec(points);
         let shape = SharedShape::polyline(points_vec, indices);
+        self.insert_shape(shape)
+    }
+
+    #[cfg(feature = "dim3")]
+    pub fn shape_create_concave_polyline(
+        &mut self,
+        points: &Vec<Vector<Real>>,
+        indices: Option<Vec<[u32; 3]>>,
+    ) -> ShapeHandle {
+        let points_vec = point_array_to_vec(points);
+        let shape = SharedShape::trimesh_with_flags(
+            points_vec,
+            indices.unwrap(),
+            TriMeshFlags::FIX_INTERNAL_EDGES,
+        );
         self.insert_shape(shape)
     }
 

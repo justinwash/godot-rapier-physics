@@ -1,10 +1,13 @@
+use godot::classes::physics_server_3d;
+use godot::classes::physics_server_3d::*;
 use godot::classes::IPhysicsServer3DExtension;
 use godot::classes::PhysicsServer3DExtension;
+use godot::classes::PhysicsServer3DRenderingServerHandler;
 use godot::classes::{self};
-use godot::engine::physics_server_3d::*;
 use godot::prelude::*;
 
 use super::rapier_physics_server_impl::RapierPhysicsServerImpl;
+use super::rapier_physics_singleton::physics_data;
 use crate::types::*;
 #[derive(GodotClass, Default)]
 #[class(base=Object,init,tool)]
@@ -350,6 +353,14 @@ impl IPhysicsServer3DExtension for RapierPhysicsServer3D {
         self.implementation.body_get_collision_priority(body)
     }
 
+    fn body_set_user_flags(&mut self, body: Rid, flags: u32) {
+        self.implementation.body_set_user_flags(body, flags);
+    }
+
+    fn body_get_user_flags(&self, body: Rid) -> u32 {
+        self.implementation.body_get_user_flags(body)
+    }
+
     fn body_set_param(&mut self, body: Rid, param: BodyParameter, value: Variant) {
         self.implementation.body_set_param(body, param, value);
     }
@@ -504,6 +515,115 @@ impl IPhysicsServer3DExtension for RapierPhysicsServer3D {
         self.implementation.body_get_direct_state(body)
     }
 
+    fn soft_body_create(&mut self) -> Rid {
+        Rid::Invalid
+    }
+
+    fn soft_body_update_rendering_server(
+        &mut self,
+        _body: Rid,
+        _rendering_server_handler: Gd<PhysicsServer3DRenderingServerHandler>,
+    ) {
+    }
+
+    fn soft_body_set_space(&mut self, _body: Rid, _space: Rid) {}
+
+    fn soft_body_get_space(&self, _body: Rid) -> Rid {
+        Rid::Invalid
+    }
+
+    fn soft_body_set_ray_pickable(&mut self, _body: Rid, _enable: bool) {}
+
+    fn soft_body_set_collision_layer(&mut self, _body: Rid, _layer: u32) {}
+
+    fn soft_body_get_collision_layer(&self, _body: Rid) -> u32 {
+        0
+    }
+
+    fn soft_body_set_collision_mask(&mut self, _body: Rid, _mask: u32) {}
+
+    fn soft_body_get_collision_mask(&self, _body: Rid) -> u32 {
+        0
+    }
+
+    fn soft_body_add_collision_exception(&mut self, _body: Rid, _body_b: Rid) {}
+
+    fn soft_body_remove_collision_exception(&mut self, _body: Rid, _body_b: Rid) {}
+
+    fn soft_body_get_collision_exceptions(&self, _body: Rid) -> Array<Rid> {
+        Array::new()
+    }
+
+    fn soft_body_set_state(
+        &mut self,
+        _body: Rid,
+        _state: physics_server_3d::BodyState,
+        _variant: Variant,
+    ) {
+    }
+
+    fn soft_body_get_state(&self, _body: Rid, _state: physics_server_3d::BodyState) -> Variant {
+        Variant::nil()
+    }
+
+    fn soft_body_set_transform(&mut self, _body: Rid, _transform: Transform3D) {}
+
+    fn soft_body_set_simulation_precision(&mut self, _body: Rid, _simulation_precision: i32) {}
+
+    fn soft_body_get_simulation_precision(&self, _body: Rid) -> i32 {
+        0
+    }
+
+    fn soft_body_set_total_mass(&mut self, _body: Rid, _total_mass: f32) {}
+
+    fn soft_body_get_total_mass(&self, _body: Rid) -> f32 {
+        0.0
+    }
+
+    fn soft_body_set_linear_stiffness(&mut self, _body: Rid, _linear_stiffness: f32) {}
+
+    fn soft_body_get_linear_stiffness(&self, _body: Rid) -> f32 {
+        0.0
+    }
+
+    fn soft_body_set_pressure_coefficient(&mut self, _body: Rid, _pressure_coefficient: f32) {}
+
+    fn soft_body_get_pressure_coefficient(&self, _body: Rid) -> f32 {
+        0.0
+    }
+
+    fn soft_body_set_damping_coefficient(&mut self, _body: Rid, _damping_coefficient: f32) {}
+
+    fn soft_body_get_damping_coefficient(&self, _body: Rid) -> f32 {
+        0.0
+    }
+
+    fn soft_body_set_drag_coefficient(&mut self, _body: Rid, _drag_coefficient: f32) {}
+
+    fn soft_body_get_drag_coefficient(&self, _body: Rid) -> f32 {
+        0.0
+    }
+
+    fn soft_body_set_mesh(&mut self, _body: Rid, _mesh: Rid) {}
+
+    fn soft_body_get_bounds(&self, _body: Rid) -> Aabb {
+        Aabb::default()
+    }
+
+    fn soft_body_move_point(&mut self, _body: Rid, _point_index: i32, _global_position: Vector3) {}
+
+    fn soft_body_get_point_global_position(&self, _body: Rid, _point_index: i32) -> Vector3 {
+        Vector3::default()
+    }
+
+    fn soft_body_remove_all_pinned_points(&mut self, _body: Rid) {}
+
+    fn soft_body_pin_point(&mut self, _body: Rid, _point_index: i32, _pin: bool) {}
+
+    fn soft_body_is_point_pinned(&self, _body: Rid, _point_index: i32) -> bool {
+        false
+    }
+
     unsafe fn body_test_motion(
         &self,
         body: Rid,
@@ -555,16 +675,16 @@ impl IPhysicsServer3DExtension for RapierPhysicsServer3D {
         self.implementation.pin_joint_get_param(joint, param)
     }
 
-    fn pin_joint_set_local_a(&mut self, joint: Rid, local_A: Vector3) {
-        self.implementation.pin_joint_set_local_a(joint, local_A);
+    fn pin_joint_set_local_a(&mut self, joint: Rid, local_a: Vector3) {
+        self.implementation.pin_joint_set_local_a(joint, local_a);
     }
 
     fn pin_joint_get_local_a(&self, joint: Rid) -> Vector3 {
         self.implementation.pin_joint_get_local_a(joint)
     }
 
-    fn pin_joint_set_local_b(&mut self, joint: Rid, local_B: Vector3) {
-        self.implementation.pin_joint_set_local_b(joint, local_B);
+    fn pin_joint_set_local_b(&mut self, joint: Rid, local_b: Vector3) {
+        self.implementation.pin_joint_set_local_b(joint, local_b);
     }
 
     fn pin_joint_get_local_b(&self, joint: Rid) -> Vector3 {
@@ -574,27 +694,27 @@ impl IPhysicsServer3DExtension for RapierPhysicsServer3D {
     fn joint_make_hinge(
         &mut self,
         joint: Rid,
-        body_A: Rid,
-        hinge_A: Transform3D,
-        body_B: Rid,
-        hinge_B: Transform3D,
+        body_a: Rid,
+        hinge_a: Transform3D,
+        body_b: Rid,
+        hinge_b: Transform3D,
     ) {
         self.implementation
-            .joint_make_hinge(joint, body_A, hinge_A, body_B, hinge_B);
+            .joint_make_hinge(joint, body_a, hinge_a, body_b, hinge_b);
     }
 
     fn joint_make_hinge_simple(
         &mut self,
         joint: Rid,
-        body_A: Rid,
-        pivot_A: Vector3,
-        axis_A: Vector3,
-        body_B: Rid,
-        pivot_B: Vector3,
-        axis_B: Vector3,
+        body_a: Rid,
+        pivot_a: Vector3,
+        axis_a: Vector3,
+        body_b: Rid,
+        pivot_b: Vector3,
+        axis_b: Vector3,
     ) {
         self.implementation
-            .joint_make_hinge_simple(joint, body_A, pivot_A, axis_A, body_B, pivot_B, axis_B);
+            .joint_make_hinge_simple(joint, body_a, pivot_a, axis_a, body_b, pivot_b, axis_b);
     }
 
     fn hinge_joint_set_param(&mut self, joint: Rid, param: HingeJointParam, value: f32) {
@@ -613,6 +733,125 @@ impl IPhysicsServer3DExtension for RapierPhysicsServer3D {
 
     fn hinge_joint_get_flag(&self, joint: Rid, flag: HingeJointFlag) -> bool {
         self.implementation.hinge_joint_get_flag(joint, flag)
+    }
+
+    fn joint_make_slider(
+        &mut self,
+        joint: Rid,
+        body_a: Rid,
+        local_ref_a: Transform3D,
+        body_b: Rid,
+        local_ref_b: Transform3D,
+    ) {
+        self.implementation
+            .joint_make_slider(joint, body_a, local_ref_a, body_b, local_ref_b);
+    }
+
+    fn slider_joint_set_param(
+        &mut self,
+        joint: Rid,
+        param: physics_server_3d::SliderJointParam,
+        value: f32,
+    ) {
+        self.implementation
+            .slider_joint_set_param(joint, param, value);
+    }
+
+    fn slider_joint_get_param(
+        &self,
+        joint: Rid,
+        param: physics_server_3d::SliderJointParam,
+    ) -> f32 {
+        self.implementation.slider_joint_get_param(joint, param)
+    }
+
+    fn joint_make_cone_twist(
+        &mut self,
+        joint: Rid,
+        body_a: Rid,
+        local_ref_a: Transform3D,
+        body_b: Rid,
+        local_ref_b: Transform3D,
+    ) {
+        self.implementation
+            .joint_make_cone_twist(joint, body_a, local_ref_a, body_b, local_ref_b);
+    }
+
+    fn cone_twist_joint_set_param(
+        &mut self,
+        joint: Rid,
+        param: physics_server_3d::ConeTwistJointParam,
+        value: f32,
+    ) {
+        self.implementation
+            .cone_twist_joint_set_param(joint, param, value);
+    }
+
+    fn cone_twist_joint_get_param(
+        &self,
+        joint: Rid,
+        param: physics_server_3d::ConeTwistJointParam,
+    ) -> f32 {
+        self.implementation.cone_twist_joint_get_param(joint, param)
+    }
+
+    fn joint_make_generic_6dof(
+        &mut self,
+        joint: Rid,
+        body_a: Rid,
+        local_ref_a: Transform3D,
+        body_b: Rid,
+        local_ref_b: Transform3D,
+    ) {
+        self.implementation.joint_make_generic_6dof(
+            joint,
+            body_a,
+            local_ref_a,
+            body_b,
+            local_ref_b,
+        );
+    }
+
+    fn generic_6dof_joint_set_param(
+        &mut self,
+        joint: Rid,
+        axis: Vector3Axis,
+        param: physics_server_3d::G6dofJointAxisParam,
+        value: f32,
+    ) {
+        self.implementation
+            .generic_6dof_joint_set_param(joint, axis, param, value);
+    }
+
+    fn generic_6dof_joint_get_param(
+        &self,
+        joint: Rid,
+        axis: Vector3Axis,
+        param: physics_server_3d::G6dofJointAxisParam,
+    ) -> f32 {
+        self.implementation
+            .generic_6dof_joint_get_param(joint, axis, param)
+    }
+
+    fn generic_6dof_joint_set_flag(
+        &mut self,
+        joint: Rid,
+        axis: Vector3Axis,
+        flag: physics_server_3d::G6dofJointAxisFlag,
+        enable: bool,
+    ) {
+        self.implementation
+            .generic_6dof_joint_set_flag(joint, axis, flag, enable);
+    }
+
+    fn generic_6dof_joint_get_flag(
+        &self,
+        joint: Rid,
+        axis: Vector3Axis,
+        flag: physics_server_3d::G6dofJointAxisFlag,
+    ) -> bool {
+        self.implementation
+            .generic_6dof_joint_get_flag(joint, axis, flag)
     }
 
     fn joint_disable_collisions_between_bodies(&mut self, joint: Rid, disable: bool) {
@@ -659,13 +898,28 @@ impl IPhysicsServer3DExtension for RapierPhysicsServer3D {
     }
 
     fn flush_queries(&mut self) {
-        let queries = self.implementation.flush_queries();
+        let physics_data = physics_data();
+        self.implementation.flushing_queries = true;
         let guard = self.base_mut();
+        let mut queries = Vec::default();
+        for space in physics_data.active_spaces.values() {
+            if let Some(space) = physics_data.spaces.get_mut(space) {
+                let query = space.get_queries(&mut physics_data.collision_objects);
+                queries.extend(query);
+            }
+        }
         for query in queries {
-            query.callv(VariantArray::new());
+            // TODO optimize function calls copying data.
+            // TODO optimize after these are called, the callbacks into direct state objects.
+            query.0.callv(Array::from(query.1.as_slice()));
         }
         drop(guard);
-        self.implementation.finish_flushing_queries();
+        self.implementation.flushing_queries = false;
+        for space in physics_data.active_spaces.values() {
+            if let Some(space) = physics_data.spaces.get_mut(space) {
+                space.update_after_queries(&mut physics_data.collision_objects);
+            }
+        }
     }
 
     fn end_sync(&mut self) {

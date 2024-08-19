@@ -1,13 +1,13 @@
 use std::ops::Mul;
 
-use godot::log::godot_error;
+use godot::global::godot_error;
 use nalgebra::zero;
 use rapier::parry;
 use rapier::parry::query::ShapeCastOptions;
 use rapier::prelude::*;
 
 use crate::rapier_wrapper::prelude::*;
-use crate::servers::rapier_physics_server_extra::PhysicsCollisionObjects;
+use crate::servers::rapier_physics_singleton::PhysicsCollisionObjects;
 use crate::spaces::rapier_space::RapierSpace;
 pub struct RayHitInfo {
     pub pixel_position: Vector<Real>,
@@ -186,25 +186,25 @@ impl PhysicsEngine {
                     hit_info_length,
                 ));
             }
-            assert!(hit_info_slice_opt.is_some());
-            let hit_info_slice = hit_info_slice_opt.unwrap();
-            physics_world
-                .physics_objects
-                .query_pipeline
-                .intersections_with_point(
-                    &physics_world.physics_objects.rigid_body_set,
-                    &physics_world.physics_objects.collider_set,
-                    &point,
-                    filter,
-                    |handle| {
-                        // Callback called on each collider hit by the ray.
-                        hit_info_slice[cpt_hit].collider = handle;
-                        hit_info_slice[cpt_hit].user_data =
-                            physics_world.get_collider_user_data(handle);
-                        cpt_hit += 1;
-                        cpt_hit < hit_info_length // Continue to search collisions if we still have space for results.
-                    },
-                );
+            if let Some(hit_info_slice) = hit_info_slice_opt {
+                physics_world
+                    .physics_objects
+                    .query_pipeline
+                    .intersections_with_point(
+                        &physics_world.physics_objects.rigid_body_set,
+                        &physics_world.physics_objects.collider_set,
+                        &point,
+                        filter,
+                        |handle| {
+                            // Callback called on each collider hit by the ray.
+                            hit_info_slice[cpt_hit].collider = handle;
+                            hit_info_slice[cpt_hit].user_data =
+                                physics_world.get_collider_user_data(handle);
+                            cpt_hit += 1;
+                            cpt_hit < hit_info_length // Continue to search collisions if we still have space for results.
+                        },
+                    );
+            }
         }
         cpt_hit
     }
@@ -222,7 +222,7 @@ impl PhysicsEngine {
         }
         let mut shape_vel2 = shape_vel2;
         if shape_vel2 == Vector::zeros() {
-            shape_vel2 = Vector::identity() * 1e-3;
+            shape_vel2 = -Vector::identity() * 1e-3;
         }
         let mut result = ShapeCastResult::new();
         if let Some(raw_shared_shape1) = self.get_shape(shape_info1.handle) {
@@ -371,10 +371,10 @@ impl PhysicsEngine {
                     let mut valid_hit = false;
                     if let Some(collider) = physics_world.physics_objects.collider_set.get(*handle)
                     {
-                        // type filder
-                        if collider.is_sensor() && collide_with_area {
-                            valid_hit = true;
-                        } else if !collider.is_sensor() && collide_with_body {
+                        // type filter
+                        if (collider.is_sensor() && collide_with_area)
+                            || (!collider.is_sensor() && collide_with_body)
+                        {
                             valid_hit = true;
                         }
                         if valid_hit {
@@ -407,8 +407,7 @@ impl PhysicsEngine {
         margin: Real,
     ) -> ContactResult {
         let mut result = ContactResult::default();
-        //let prediction = Real::max(0.002, margin);
-        let prediction = margin;
+        let prediction = Real::max(0.002, margin);
         if let Some(raw_shared_shape1) = self.get_shape(shape_info1.handle) {
             let shared_shape1 = scale_shape(raw_shared_shape1, shape_info1);
             if let Some(raw_shared_shape2) = self.get_shape(shape_info2.handle) {

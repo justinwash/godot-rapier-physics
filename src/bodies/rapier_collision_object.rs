@@ -1,18 +1,32 @@
 #[cfg(feature = "dim2")]
-use godot::engine::physics_server_2d::*;
+use godot::classes::physics_server_2d::*;
 #[cfg(feature = "dim3")]
-use godot::engine::physics_server_3d::*;
+use godot::classes::physics_server_3d::*;
+use godot::classes::ProjectSettings;
 use godot::prelude::*;
 use rapier::dynamics::RigidBodyHandle;
 use rapier::geometry::ColliderHandle;
-use servers::rapier_physics_server_extra::PhysicsShapes;
-use servers::rapier_physics_server_extra::PhysicsSpaces;
+use servers::rapier_physics_singleton::PhysicsShapes;
+use servers::rapier_physics_singleton::PhysicsSpaces;
+use servers::rapier_project_settings::RapierProjectSettings;
 
 use super::rapier_area::RapierArea;
 use super::rapier_body::RapierBody;
 use crate::rapier_wrapper::prelude::*;
 use crate::types::*;
 use crate::*;
+#[cfg(feature = "dim2")]
+const SLEEP_THRESHOLD_LINEAR: &str = "physics/2d/sleep_threshold_linear";
+#[cfg(feature = "dim3")]
+const SLEEP_THRESHOLD_LINEAR: &str = "physics/3d/sleep_threshold_linear";
+#[cfg(feature = "dim2")]
+const SLEEP_THRESHOLD_ANGULAR: &str = "physics/2d/sleep_threshold_angular";
+#[cfg(feature = "dim3")]
+const SLEEP_THRESHOLD_ANGULAR: &str = "physics/3d/sleep_threshold_angular";
+#[cfg(feature = "dim2")]
+const TIME_BEFORE_SLEEP: &str = "physics/2d/time_before_sleep";
+#[cfg(feature = "dim3")]
+const TIME_BEFORE_SLEEP: &str = "physics/3d/time_before_sleep";
 //#[cfg_attr(feature = "serde-serialize", typetag::serde(tag = "type"))]
 pub trait IRapierCollisionObject: Sync {
     fn get_base(&self) -> &RapierCollisionObject;
@@ -102,7 +116,7 @@ pub trait IRapierCollisionObject: Sync {
         physics_spaces: &mut PhysicsSpaces,
     );
 }
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 #[cfg_attr(
     feature = "serde-serialize",
     derive(serde::Serialize, serde::Deserialize)
@@ -118,6 +132,7 @@ pub enum CollisionObjectType {
 )]
 pub struct CollisionObjectShape {
     pub xform: Transform,
+    #[cfg_attr(feature = "serde-serialize", serde(skip, default = "invalid_rid"))]
     pub shape: Rid,
     pub disabled: bool,
     pub one_way_collision: bool,
@@ -127,7 +142,7 @@ pub struct CollisionObjectShape {
 impl Default for CollisionObjectShape {
     fn default() -> Self {
         Self {
-            xform: Transform::default(),
+            xform: Transform::IDENTITY,
             shape: Rid::Invalid,
             disabled: false,
             one_way_collision: false,
@@ -139,23 +154,29 @@ impl Default for CollisionObjectShape {
 // TODO deserialize
 #[cfg_attr(feature = "serde-serialize", derive(serde::Serialize))]
 pub struct RapierCollisionObject {
+    user_flags: u32,
     collision_object_type: CollisionObjectType,
+    #[cfg_attr(feature = "serde-serialize", serde(skip, default = "invalid_rid"))]
     rid: Rid,
     instance_id: u64,
     canvas_instance_id: u64,
     pickable: bool,
     pub(crate) shapes: Vec<CollisionObjectShape>,
+    #[cfg_attr(feature = "serde-serialize", serde(skip, default = "invalid_rid"))]
     space: Rid,
     transform: Transform,
     inv_transform: Transform,
     collision_mask: u32,
     collision_layer: u32,
+    pub(crate) is_debugging_contacts: bool,
     // TODO serialize this
     #[cfg_attr(feature = "serde-serialize", serde(skip))]
     pub(crate) mode: BodyMode,
     body_handle: RigidBodyHandle,
     space_handle: WorldHandle,
-    pub(crate) area_detection_counter: u32,
+    pub(crate) activation_angular_threshold: real,
+    pub(crate) activation_linear_threshold: real,
+    pub(crate) activation_time_until_sleep: real,
 }
 impl Default for RapierCollisionObject {
     fn default() -> Self {
@@ -168,7 +189,23 @@ impl RapierCollisionObject {
         if collision_object_type == CollisionObjectType::Area {
             mode = BodyMode::STATIC;
         }
+        let project_settings = ProjectSettings::singleton();
+        let activation_angular_threshold = project_settings
+            .get_setting_with_override(SLEEP_THRESHOLD_ANGULAR.into())
+            .try_to()
+            .unwrap_or_default();
+        let length_unit = RapierProjectSettings::get_length_unit();
+        let mut activation_linear_threshold = project_settings
+            .get_setting_with_override(SLEEP_THRESHOLD_LINEAR.into())
+            .try_to()
+            .unwrap_or_default();
+        activation_linear_threshold /= length_unit;
+        let activation_time_until_sleep = project_settings
+            .get_setting_with_override(TIME_BEFORE_SLEEP.into())
+            .try_to()
+            .unwrap_or_default();
         Self {
+            user_flags: 0,
             collision_object_type,
             rid,
             instance_id: 0,
@@ -176,14 +213,17 @@ impl RapierCollisionObject {
             pickable: true,
             shapes: Vec::new(),
             space: Rid::Invalid,
-            transform: Transform::default(),
-            inv_transform: Transform::default(),
+            transform: Transform::IDENTITY,
+            inv_transform: Transform::IDENTITY,
             collision_mask: 1,
             collision_layer: 1,
+            is_debugging_contacts: false,
             mode,
             body_handle: RigidBodyHandle::invalid(),
             space_handle: WorldHandle::default(),
-            area_detection_counter: 0,
+            activation_angular_threshold,
+            activation_linear_threshold,
+            activation_time_until_sleep,
         }
     }
 
@@ -220,6 +260,7 @@ impl RapierCollisionObject {
                     handle = physics_engine.collider_create_sensor(
                         self.space_handle,
                         shape_handle,
+                        &mat,
                         self.body_handle,
                         &user_data,
                     );
@@ -255,16 +296,14 @@ impl RapierCollisionObject {
                     // skip
                     continue;
                 }
-                if self.area_detection_counter > 0 {
-                    // Keep track of body information for delayed removal
-                    space.add_removed_collider(
-                        shape.collider_handle,
-                        self.rid,
-                        self.instance_id,
-                        i,
-                        self.collision_object_type,
-                    );
-                }
+                // Keep track of body information for delayed removal
+                space.add_removed_collider(
+                    shape.collider_handle,
+                    self.rid,
+                    self.instance_id,
+                    i,
+                    self.collision_object_type,
+                );
                 physics_engine.collider_destroy(self.space_handle, shape.collider_handle);
                 shape.collider_handle = ColliderHandle::invalid();
             }
@@ -279,17 +318,15 @@ impl RapierCollisionObject {
         physics_engine: &mut PhysicsEngine,
     ) -> ColliderHandle {
         if shape.collider_handle != ColliderHandle::invalid() {
-            if self.area_detection_counter > 0 {
-                if let Some(space) = physics_spaces.get_mut(&self.space) {
-                    // Keep track of body information for delayed removal
-                    space.add_removed_collider(
-                        shape.collider_handle,
-                        self.rid,
-                        self.instance_id,
-                        p_shape_index,
-                        self.get_type(),
-                    );
-                }
+            if let Some(space) = physics_spaces.get_mut(&self.space) {
+                // Keep track of body information for delayed removal
+                space.add_removed_collider(
+                    shape.collider_handle,
+                    self.rid,
+                    self.instance_id,
+                    p_shape_index,
+                    self.get_type(),
+                );
             }
             physics_engine.collider_destroy(self.space_handle, shape.collider_handle);
         }
@@ -333,12 +370,8 @@ impl RapierCollisionObject {
             return;
         }
         let position = physics_engine.body_get_position(self.space_handle, self.body_handle);
-        let angle = physics_engine.body_get_angle(self.space_handle, self.body_handle);
-        self.transform = transform_update(
-            &self.transform,
-            angle_to_godot(angle),
-            vector_to_godot(position),
-        );
+        let rotation = physics_engine.body_get_angle(self.space_handle, self.body_handle);
+        self.transform = transform_update(&self.transform, rotation, vector_to_godot(position));
         self.inv_transform = transform_inverse(&self.transform);
     }
 
@@ -357,7 +390,6 @@ impl RapierCollisionObject {
             }
             self.destroy_shapes(physics_engine, physics_spaces);
             // Reset area detection counter to keep it consistent for new detections
-            self.area_detection_counter = 0;
             if let Some(space) = physics_spaces.get_mut(&self.space) {
                 space.reset_space_if_empty(physics_engine);
             }
@@ -365,6 +397,7 @@ impl RapierCollisionObject {
         self.space = p_space;
         if let Some(space) = physics_spaces.get_mut(&self.space) {
             self.space_handle = space.get_handle();
+            self.is_debugging_contacts = space.is_debugging_contacts();
         } else {
             self.space_handle = WorldHandle::default();
             self.space = Rid::Invalid;
@@ -383,6 +416,9 @@ impl RapierCollisionObject {
                 angle,
                 &user_data,
                 BodyType::Static,
+                self.activation_angular_threshold,
+                self.activation_linear_threshold,
+                self.activation_time_until_sleep,
             );
         } else if self.mode == BodyMode::KINEMATIC {
             self.body_handle = physics_engine.body_create(
@@ -391,6 +427,9 @@ impl RapierCollisionObject {
                 angle,
                 &user_data,
                 BodyType::Kinematic,
+                self.activation_angular_threshold,
+                self.activation_linear_threshold,
+                self.activation_time_until_sleep,
             );
         } else {
             self.body_handle = physics_engine.body_create(
@@ -399,6 +438,9 @@ impl RapierCollisionObject {
                 angle,
                 &user_data,
                 BodyType::Dynamic,
+                self.activation_angular_threshold,
+                self.activation_linear_threshold,
+                self.activation_time_until_sleep,
             );
         }
     }
@@ -471,7 +513,7 @@ impl RapierCollisionObject {
         if let Some(shape) = self.shapes.get(idx) {
             return shape.xform;
         }
-        Transform::default()
+        Transform::IDENTITY
     }
 
     pub fn set_transform(
@@ -480,6 +522,7 @@ impl RapierCollisionObject {
         wake_up: bool,
         physics_engine: &mut PhysicsEngine,
     ) {
+        let teleport = self.transform == Transform::IDENTITY;
         self.transform = p_transform;
         self.inv_transform = transform_inverse(&self.transform);
         if !self.is_valid() {
@@ -493,6 +536,7 @@ impl RapierCollisionObject {
             self.body_handle,
             position,
             rotation,
+            teleport,
             wake_up,
         );
     }
@@ -579,6 +623,14 @@ impl RapierCollisionObject {
             physics_engine.body_destroy(self.space_handle, self.body_handle);
             self.body_handle = RigidBodyHandle::invalid();
         }
+    }
+
+    pub fn set_user_flags(&mut self, p_flags: u32) {
+        self.user_flags = p_flags;
+    }
+
+    pub fn get_user_flags(&self) -> u32 {
+        self.user_flags
     }
 }
 impl Drop for RapierCollisionObject {

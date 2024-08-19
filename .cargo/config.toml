@@ -3,17 +3,10 @@ rustflags = [
   "-C",
   "link-args=-sSIDE_MODULE=2",
   "-C",
-  "link-args=-pthread",                                    # was -sUSE_PTHREADS=1 in earlier emscripten versions
+  "link-args=-pthread",
   "-C",
   "target-feature=+atomics,+bulk-memory,+mutable-globals",
   "-Clink-args=-sEXPORT_ALL=1",
-  # Trying out stuff
-  # "-Clink-arg=-O0",
-  # "-Clink-arg=-g",
-  # "-Clink-arg=-sASSERTIONS=2",
-  # "-Clink-arg=-sDEMANGLE_SUPPORT=1",
-  # "-Clink-arg=-sEMULATE_FUNCTION_POINTER_CASTS",
-  # ---
   "-Clink-arg=-fwasm-exceptions",
   "-C",
   "link-args=-sSUPPORT_LONGJMP=wasm",
